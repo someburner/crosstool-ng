@@ -15,11 +15,16 @@ config/configure.in
 config/gen/
 config/versions/
 .config
+.config.org
+.config.orig
 verbatim-data.mk
 maintainer/package-versions
+libexec/
+share/
 
 # Compressed files
 *.tar*
+!overlays/*.tar
 *.zip
 *.xz
 *.7zip
