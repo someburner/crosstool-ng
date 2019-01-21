@@ -13,7 +13,7 @@ CT_LoadConfig() {
     # It also sets KERNEL/ARCH/... for file inclusion below. Does not handle
     # recursive definitions yet. We don't need arrays at this point.
     CT_TestOrAbort "Configuration file not found. Please create one." -r .config
-    . .config
+    . ./.config # Prefixing with ./ prevents Bash from searching $PATH
 
     # Include sub-scripts instead of calling them: that way, we do not have to
     # export any variable, nor re-parse the configuration and functions files.
@@ -23,7 +23,7 @@ CT_LoadConfig() {
     . "${CT_LIB_DIR}/scripts/build/kernel/${CT_KERNEL}.sh"
     . "${CT_LIB_DIR}/scripts/build/companion_libs.sh"
     . "${CT_LIB_DIR}/scripts/build/binutils/${CT_BINUTILS}.sh"
-    . "${CT_LIB_DIR}/scripts/build/libc/${CT_LIBC}.sh"
+    . "${CT_LIB_DIR}/scripts/build/libc.sh"
     . "${CT_LIB_DIR}/scripts/build/cc/${CT_CC}.sh"
     . "${CT_LIB_DIR}/scripts/build/debug.sh"
     . "${CT_LIB_DIR}/scripts/build/test_suite.sh"
@@ -37,7 +37,7 @@ CT_LoadConfig() {
     oldvals=""
     try=0
     while [ "$try" -le 10 ]; do
-        . .config
+        . ./.config # Prefixing with ./ prevents Bash from searching $PATH
         vals=`set | ${grep} -E '^CT_'`
         if [ "$oldvals" = "$vals" ]; then
             break
@@ -582,7 +582,8 @@ CT_Popd() {
 
 # Create a dir and pushd into it
 # Usage: CT_mkdir_pushd <dir/to/create>
-CT_mkdir_pushd() {
+CT_mkdir_pushd()
+{
     local dir="${1}"
 
     mkdir -p "${dir}"
@@ -592,7 +593,8 @@ CT_mkdir_pushd() {
 # Creates a temporary directory
 # $1: variable to assign to
 # Usage: CT_MktempDir foo
-CT_MktempDir() {
+CT_MktempDir()
+{
     # Some mktemp do not allow more than 6 Xs
     eval "$1"=$(mktemp -q -d "${CT_BUILD_DIR}/tmp.XXXXXX")
     CT_TestOrAbort "Could not make temporary directory" -n "${!1}" -a -d "${!1}"
@@ -602,26 +604,29 @@ CT_MktempDir() {
 
 # Removes one or more directories, even if it is read-only, or its parent is
 # Usage: CT_DoForceRmdir dir [...]
-CT_DoForceRmdir() {
+CT_DoForceRmdir()
+{
     local dir
-    local mode
+    local cnt
+
     for dir in "${@}"; do
-        [ -d "${dir}" ] || continue
-        case "${CT_CONFIGURE_has_stat_flavor_GNU},${CT_CONFIGURE_has_stat_flavor_BSD}" in
-            y,*)
-                mode="$(stat -c '%a' "$(dirname "${dir}")")"
-                ;;
-            *,y)
-                mode="$(stat -f '%Lp' "$(dirname "${dir}")")"
-                ;;
-            *)
-                CT_Abort "Unknown stat format options"
-                ;;
-        esac
-        CT_DoExecLog ALL chmod u+w "$(dirname "${dir}")"
-        CT_DoExecLog ALL chmod -R u+w "${dir}"
-        CT_DoExecLog ALL rm -rf "${dir}"
-        CT_DoExecLog ALL chmod ${mode} "$(dirname "${dir}")"
+        [ -e "${dir}" ] || continue
+        CT_TestOrAbort "Cannot remove '${dir}': not a directory" -d "${dir}"
+        CT_DoExecLog ALL chmod -R u+w "${dir}" || :;
+        if CT_DoExecLog ALL rm -rf "${dir}"; then
+            continue
+        fi
+        # If we succeeded in removing the whole directory, good. If not,
+        # but only the top level directory remains - it is fine, too, because
+        # this function is used to remove the directories that are going to be
+        # re-created. Hence, verify we at least succeeded in verifying the
+        # contents of this directory.
+        if [ -d "${dir}" ]; then
+            cnt=$(ls -a "${dir}" | { grep -v '^\.\{1,2\}$' || :; } | wc -l)
+            if [ "${cnt}" != "0" ]; then
+                CT_Abort "Failed to remove '${dir}'"
+            fi
+        fi
     done
 }
 
@@ -630,7 +635,8 @@ CT_DoForceRmdir() {
 # $1: path to add
 # $2: add as 'first' or 'last' path, 'first' is assumed if $2 is empty
 # Usage CT_SetLibPath /some/where/lib [first|last]
-CT_SetLibPath() {
+CT_SetLibPath()
+{
     local path="$1"
     local pos="$2"
 
@@ -752,7 +758,9 @@ CT_DoGetFile()
 }
 
 # This function saves the specified to local storage if possible,
-# and if so, symlinks it for later usage
+# and if so, symlinks it for later usage. This function is called from
+# the `if' condition (via the CT_GetFile) and therefore must return
+# on error rather than relying on the shell's ERR trap to catch it.
 # Usage: CT_SaveLocal </full/path/file.name>
 CT_SaveLocal()
 {
@@ -762,9 +770,22 @@ CT_SaveLocal()
     if [ "${CT_SAVE_TARBALLS}" = "y" ]; then
         CT_DoLog EXTRA "Saving '${basename}' to local storage"
         # The file may already exist if downloads are forced: remove it first
-        CT_DoExecLog ALL rm -f "${CT_LOCAL_TARBALLS_DIR}/${basename}"
-        CT_DoExecLog ALL mv -f "${file}" "${CT_LOCAL_TARBALLS_DIR}"
-        CT_DoExecLog ALL ln -s "${CT_LOCAL_TARBALLS_DIR}/${basename}" "${file}"
+        if ! CT_DoExecLog ALL rm -f "${CT_LOCAL_TARBALLS_DIR}/${basename}"; then
+            return 1
+        fi
+        if ! CT_DoExecLog ALL mv -f "${file}" "${CT_LOCAL_TARBALLS_DIR}"; then
+            # Move may have failed if the local tarball storage is on a different
+            # filesystem. Fallback to copy+delete.
+            if ! CT_DoExecLog ALL cp -f "${file}" "${CT_LOCAL_TARBALLS_DIR}"; then
+                return 1
+            fi
+            if ! CT_DoExecLog ALL rm -f "${file}"; then
+                return 1
+            fi
+        fi
+        if ! CT_DoExecLog ALL ln -s "${CT_LOCAL_TARBALLS_DIR}/${basename}" "${file}"; then
+            return 1
+        fi
     fi
 }
 
@@ -887,7 +908,12 @@ CT_DoVerifySignature()
     CT_Popd
 
     # If we get here, verification succeeded.
-    CT_SaveLocal "${CT_TARBALLS_DIR}/${sigfile}${ext}"
+    if ! CT_SaveLocal "${CT_TARBALLS_DIR}/${sigfile}${ext}"; then
+        CT_Popd
+        return 1
+    fi
+
+    return 0
 }
 
 # Download the file from one of the URLs passed as argument
@@ -972,7 +998,9 @@ CT_GetFile()
                     CT_DoExecLog ALL rm "${CT_TARBALLS_DIR}/${basename}${ext}"
                     return 1
                 fi
-                CT_SaveLocal "${CT_TARBALLS_DIR}/${basename}${ext}"
+                if ! CT_SaveLocal "${CT_TARBALLS_DIR}/${basename}${ext}"; then
+                    return 1
+                fi
                 return 0
             fi
         done
@@ -1004,9 +1032,15 @@ CT_DoConfigSub() {
 # Normally, each step is executed in a sub-shell and thus cannot modify the
 # environment for the next step(s). When this is needed, it can do so by
 # invoking this function.
-# Usage: CT_EnvModify VAR VALUE
+# Usage: CT_EnvModify [export] VAR VALUE
 CT_EnvModify() {
-    echo "${1}=\"${2}\"" >> "${CT_BUILD_DIR}/env.modify.sh"
+    local e
+    if [ "$1" = "export" ]; then
+        shift
+        e="export "
+    fi
+    eval "${e}${1}=\"${2}\""
+    echo "${e}${1}=\"${2}\"" >> "${CT_BUILD_DIR}/env.modify.sh"
 }
 
 # Compute the target tuple from what is provided by the user
@@ -1060,19 +1094,19 @@ CT_DoBuildTargetTuple() {
     # Build the default architecture tuple part
     CT_TARGET_ARCH="${CT_ARCH}${CT_ARCH_SUFFIX}"
 
-    # Set defaults for the system part of the tuple. Can be overriden
-    # by architecture-specific values.
+    # Set defaults for the system part of the tuple; only C libraries that
+    # support multiple architectures. Can be overriden by architecture-specific
+    # values.
     case "${CT_LIBC}" in
-        *glibc) CT_TARGET_SYS=gnu;;
-        uClibc) CT_TARGET_SYS=uclibc;;
-        musl)   CT_TARGET_SYS=musl;;
-        bionic)   CT_TARGET_SYS=android;;
-        avr-libc)
-            # avr-libc only seems to work with the non-canonical "avr" target.
-            CT_TARGET_SKIP_CONFIG_SUB=y
-            CT_TARGET_SYS= # CT_TARGET_SYS must be empty too
-        ;;
-        *)      CT_TARGET_SYS=elf;;
+        glibc)       CT_TARGET_SYS=gnu;;
+        uClibc)      CT_TARGET_SYS=uclibc;;
+        musl)        CT_TARGET_SYS=musl;;
+        bionic)      CT_TARGET_SYS=android;;
+        none|newlib) CT_TARGET_SYS=elf;;
+        *)
+            # Keep empty for the libraries like mingw or avr-libc
+            CT_TARGET_SYS=
+            ;;
     esac
 
     # Set the default values for ARCH, ABI, CPU, TUNE, FPU and FLOAT
@@ -1111,10 +1145,18 @@ CT_DoBuildTargetTuple() {
     CT_DoKernelTupleValues
 
     # Finish the target tuple construction
-    CT_TARGET="${CT_TARGET_ARCH}"
-    CT_TARGET="${CT_TARGET}${CT_TARGET_VENDOR:+-${CT_TARGET_VENDOR}}"
-    CT_TARGET="${CT_TARGET}${CT_TARGET_KERNEL:+-${CT_TARGET_KERNEL}}"
-    CT_TARGET="${CT_TARGET}${CT_TARGET_SYS:+-${CT_TARGET_SYS}}"
+    if [ -z "${CT_OMIT_TARGET_ARCH}" ]; then
+        CT_TARGET="${CT_TARGET_ARCH}"
+    fi
+    if [ -z "${CT_OMIT_TARGET_VENDOR}" -a -n "${CT_TARGET_VENDOR}" ]; then
+        CT_TARGET="${CT_TARGET:+${CT_TARGET}-}${CT_TARGET_VENDOR}"
+    fi
+    if [ -n "${CT_TARGET_KERNEL}" ]; then
+        CT_TARGET="${CT_TARGET:+${CT_TARGET}-}${CT_TARGET_KERNEL}"
+    fi
+    if [ -n "${CT_TARGET_SYS}" ]; then
+        CT_TARGET="${CT_TARGET:+${CT_TARGET}-}${CT_TARGET_SYS}"
+    fi
 
     # Sanity checks
     __sed_alias=""
@@ -1131,6 +1173,12 @@ CT_DoBuildTargetTuple() {
     # Canonicalise it
     if [ "${CT_TARGET_SKIP_CONFIG_SUB}" != "y" ]; then
         CT_TARGET=$(CT_DoConfigSub "${CT_TARGET}")
+
+        if [ -n "${CT_OMIT_TARGET_VENDOR}" ]; then
+            # config.sub always returns a 3- or 4-part tuple, with vendor
+            # always being the 2nd part.
+            CT_TARGET="${CT_TARGET%%-*}-${CT_TARGET#*-*-}"
+        fi
     fi
 
     # Prepare the target CFLAGS
@@ -1155,11 +1203,14 @@ CT_DoBuildTargetTuple() {
     # Instead, save them into a different variable here. Then, after the first
     # core pass, we'll know which of them vary with multilibs (i.e. must be
     # filtered out).
-    if [ "${CT_MULTILIB}" = "y" ]; then
+    if [ -n "${CT_MULTILIB}" ]; then
         CT_ARCH_TARGET_CFLAGS_MULTILIB="${CT_ARCH_TARGET_CFLAGS}"
         CT_ARCH_TARGET_CFLAGS=
         CT_ARCH_TARGET_LDFLAGS_MULTILIB="${CT_ARCH_TARGET_LDFLAGS}"
         CT_ARCH_TARGET_LDFLAGS=
+    else
+        CT_ALL_TARGET_CFLAGS="${CT_ARCH_TARGET_CFLAGS} ${CT_TARGET_CFLAGS}"
+        CT_ALL_TARGET_LDFLAGS="${CT_ARCH_TARGET_LDFLAGS} ${CT_TARGET_LDFLAGS}"
     fi
 }
 
@@ -1279,7 +1330,7 @@ CT_DoSaveState() {
         done | ${sed} 's/^declare /declare -g /'
         echo "builtin unset ${CT_ENVVAR_UNSET}"
     } >"${state_dir}/env.sh"
-    
+
     # Save .config to check it hasn't changed when resuming.
     CT_DoExecLog STATE cp ".config" "${state_dir}/config"
 
@@ -1405,6 +1456,7 @@ CT_IterateMultilibs() {
     local multi_dir multi_os_dir multi_os_dir_gcc multi_root multi_flags multi_index multi_target
     local root_suffix
     local dir_postfix
+    local v
 
     # Name used internally below
     if [ "${prefix}" = "sysroot-check" ]; then
@@ -1496,6 +1548,11 @@ CT_IterateMultilibs() {
         dir_postfix=_${multi_dir//\//_}
         dir_postfix=${dir_postfix%_.}
         CT_mkdir_pushd "${prefix}${dir_postfix}"
+        CT_DoLog DEBUG "Multilib iterator: call function '${func}' in '${prefix}${dir_postfix}'"
+        for v in multi_dir multi_os_dir multi_os_dir_gcc multi_flags multi_root multi_target multi_index; do
+            CT_DoLog DEBUG "  ${v}=${!v}"
+        done
+
         $func multi_dir="${multi_dir}"               \
               multi_os_dir="${multi_os_dir}"         \
               multi_os_dir_gcc="${multi_os_dir_gcc}" \
@@ -1691,26 +1748,33 @@ CT_Mirrors()
         echo "https://releases.linaro.org/archive/${yymm}/components/toolchain/${project}-linaro"
         ;;
     kernel.org)
-        # TBD move to linux.sh?
-        if [ "${project}" != "linux" ]; then
-            echo "-unknown-"
-        fi
-        local version="${CT_LINUX_VERSION}"
-        case "${version}" in
-        '')
-            # Ignore, this happens before .config is fully evaluated
-            ;;
-        [34].*)
-            echo "http://www.kernel.org/pub/linux/kernel/v${version%%.*}.x"
-            ;;
-        2.6.*)
-            echo "http://www.kernel.org/pub/linux/kernel/v2.6"
+        # TBD move to linux.sh and dtc.sh?
+        case "${project}" in
+        linux)
+            local version="${CT_LINUX_VERSION}"
             case "${version}" in
-            2.6.*.*)
-                echo "http://www.kernel.org/pub/linux/kernel/v2.6/longterm"
-                echo "http://www.kernel.org/pub/linux/kernel/v2.6/longterm/v${version%.*}"
+            '')
+                # Ignore, this happens before .config is fully evaluated
+                ;;
+            [34].*)
+                echo "http://www.kernel.org/pub/linux/kernel/v${version%%.*}.x"
+                ;;
+            2.6.*)
+                echo "http://www.kernel.org/pub/linux/kernel/v2.6"
+                case "${version}" in
+                2.6.*.*)
+                    echo "http://www.kernel.org/pub/linux/kernel/v2.6/longterm"
+                    echo "http://www.kernel.org/pub/linux/kernel/v2.6/longterm/v${version%.*}"
+                    ;;
+                esac
+                ;;
+            *)
+                echo "-unknown-"
                 ;;
             esac
+            ;;
+        dtc)
+            echo "https://mirrors.edge.kernel.org/pub/software/utils/dtc"
             ;;
         *)
             echo "-unknown-"
@@ -1760,7 +1824,7 @@ CT_Download_cvs()
     fi
 }
 
-# Find the most recent version from Subversion. 
+# Find the most recent version from Subversion.
 CT_GetVersion_svn()
 {
     devel_branch="${devel_branch:-/trunk}"
@@ -1813,7 +1877,7 @@ CT_Download_hg()
     fi
     if [ "${devel_revision}" = "to.be.determined" ]; then
         # Report what we found out (as common message lacks the revision)
-        devel_revision=`hg identify -i` 
+        devel_revision=`hg identify -i`
         unique_id="${devel_revision}"
         CT_DoLog EXTRA "Retrieved revision ${devel_revision}"
     else
@@ -1949,6 +2013,7 @@ CT_PackageRun()
             src_release mirrors archive_filename archive_dirname archive_formats signature_format \
             src_devel devel_vcs devel_url devel_branch devel_revision devel_subdir devel_bootstrap \
             src_custom custom_location patch_order; do
+        eval "CT_DoLog DEBUG \"Package iterator: set ${v}='\${CT_${use}_${v^^}}'\""
         eval "local ${v}=\${CT_${use}_${v^^}}"
     done
 
@@ -1964,6 +2029,7 @@ CT_PackageRun()
         eval "eval ${v}=\${${v}//@/$}"
     done
 
+    CT_DoLog DEBUG "Package iterator: run ${run} $*"
     ${run} "$@"
 
     # Save certain variables that may be modified by the callback.
@@ -1972,7 +2038,7 @@ CT_PackageRun()
     for v in devel_branch devel_revision basename src_dir pkg_dir; do
         eval "[ \"\${${v}}\" != \"\${CT_${use}_${v^^}}\" ] || continue"
         eval "CT_${use}_${v^^}=\${${v}}"
-        eval "CT_DoLog DEBUG \"Override CT_${use}_${v^^}=\${CT_${use}_${v^^}}\""
+        eval "CT_DoLog DEBUG \"Package iterator: override CT_${use}_${v^^}=\${CT_${use}_${v^^}}\""
     done
 }
 
@@ -2031,7 +2097,7 @@ CT_DoFetch()
 
         if [ "${CT_FORBID_DOWNLOAD}" = "y" ]; then
             CT_DoLog WARN "Downloads forbidden, not trying ${devel_vcs} retrieval"
-            return 1
+            CT_Abort "${pkg_name}: cannot check out"
         fi
 
         CT_DoLog EXTRA "Checking out '${basename}' (${devel_vcs} ${devel_url}${devel_branch:+, branch ${devel_branch}}${devel_revision:+, revision ${devel_revision}})"
@@ -2046,7 +2112,9 @@ CT_DoFetch()
 
         CT_DoExecLog ALL mv "${pkg_name}${devel_subdir:+/${devel_subdir}}" "${basename}"
         CT_DoExecLog ALL tar cjf "${CT_TARBALLS_DIR}/${basename}.tar.bz2" "${basename}"
-        CT_SaveLocal "${CT_TARBALLS_DIR}/${basename}.tar.bz2"
+        if ! CT_SaveLocal "${CT_TARBALLS_DIR}/${basename}.tar.bz2"; then
+            CT_Abort "${pkg_name}: failed to save to local storage"
+        fi
         CT_Popd
         CT_DoExecLog ALL rm -rf "${tmp_dir}"
 
@@ -2116,11 +2184,14 @@ CT_DoExtractPatch()
     if [ "${CT_TARGET_USE_OVERLAY}" = "y" -a ! -d "${CT_BUILD_DIR}/overlay" ]; then
         CT_DoExecLog ALL mkdir -p "${CT_BUILD_DIR}/overlay"
         overlay="${CT_OVERLAY_LOCATION}/${CT_ARCH}_${CT_OVERLAY_NAME:-overlay}"
-        ext=`CT_GetFileExtension "${overlay}"`
-        if [ ! -r "${overlay}${ext}" ]; then
-            CT_Abort "Overlay ${overlay} not found"
+        if [ -d "${overlay}" ]; then
+            CT_DoExecLog ALL cp -av "${overlay}/." "${CT_BUILD_DIR}/overlay"
+        else
+            if ! ext=`CT_GetFileExtension "${overlay}"`; then
+                CT_Abort "Overlay ${overlay} not found"
+            fi
+            CT_Extract "${overlay}${ext}" "${CT_BUILD_DIR}/overlay"
         fi
-        CT_Extract "${overlay}${ext}" "${CT_BUILD_DIR}/overlay"
     fi
 
     # Can use common location only if using non-custom source, only bundled patches
@@ -2195,7 +2266,7 @@ CT_DoExtractPatch()
                     done
                 fi
             done
- 
+
             # TBD create meta-package for config.sub/config.guess with replacement script
             if [ "${CT_OVERRIDE_CONFIG_GUESS_SUB}" = "y" ]; then
                 CT_DoLog ALL "Overiding config.guess and config.sub"
@@ -2324,7 +2395,10 @@ CT_GetPkgBuildVersion()
     fi
 
     __do_GetPkgBuildVersion() {
-        tmp="${pkg_name}-${version}"
+        tmp="${pkg_name}"
+        if [ "${version}" != "unknown" ]; then
+            tmp+="-${version}"
+        fi
         if [ "${src_devel}" = "y" ]; then
             tmp+="-${devel_vcs}"
             if [ -n "${devel_revision}" ]; then
@@ -2342,18 +2416,6 @@ CT_GetPkgBuildVersion()
     eval "${var}=\"${tmp}\""
 }
 
-# Get a package version as selected by a generated choice in kconfig.
-CT_GetChoicePkgBuildVersion()
-{
-    local choice="${1}"
-    local var="${2}"
-    local component
-
-    # Find the selected component
-    eval "component=\${CT_${choice}_CHOICE_KSYM}"
-    CT_GetPkgBuildVersion "${choice}" "${component}" "${var}"
-}
-
 # Finally, load paths.sh. For --enable-local build, it is located in
 # the current directory (CT_TOP_DIR) while the rest of the scripts are
 # in the source directory (CT_LIB_DIR). For other setups, paths.sh
@@ -2366,3 +2428,28 @@ else
     CT_Error "Not found: paths.sh"
 fi
 . "${paths_sh_location}"
+
+CT_InstallCopyingInformation()
+{
+    local licfile
+    local dstdir
+
+    CT_DoLog EXTRA "Collect license information from: ${CT_SRC_DIR}"
+    CT_DoLog EXTRA "Put the license information to: ${CT_PREFIX_DIR}/share/licenses"
+
+    for licfile in $( find "${CT_SRC_DIR}" -follow -type f -a \( -name "COPYING*" -o -name "LICENSE*" \) ); do
+        dstdir="${licfile%/*}"
+        dstdir="${CT_PREFIX_DIR}/share/licenses${dstdir#${CT_SRC_DIR}}"
+        mkdir -p "${dstdir}"
+        CT_DoExecLog ALL cp -av "${licfile}" "${dstdir}/"
+    done
+
+    # Also add crosstool's information
+    for licfile in ${CT_LIB_DIR}/{COPYING*,LICENSE*,licenses.d}; do
+        dstdir="${CT_PREFIX_DIR}/share/licenses/crosstool-ng"
+        mkdir -p "${dstdir}"
+        CT_DoExecLog ALL cp -av "${licfile}" "${dstdir}/"
+    done
+
+    shopt -u nullglob
+}

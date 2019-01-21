@@ -153,6 +153,11 @@ do_binutils_backend() {
     if [ "${CT_BINUTILS_PLUGINS}" = "y" ]; then
         extra_config+=( --enable-plugins )
     fi
+    if [ "${CT_BINUTILES_RELRO}" = "y" ]; then
+        extra_config+=( --enable-relro )
+    elif [ "${CT_BINUTILS_RELRO}" != "m" ]; then
+        extra_config+=( --disable-relro )
+    fi
     if [ "${CT_BINUTILS_HAS_PKGVERSION_BUGURL}" = "y" ]; then
         [ -n "${CT_PKGVERSION}" ] && extra_config+=("--with-pkgversion=${CT_PKGVERSION}")
         [ -n "${CT_TOOLCHAIN_BUGURL}" ] && extra_config+=("--with-bugurl=${CT_TOOLCHAIN_BUGURL}")
@@ -203,6 +208,12 @@ do_binutils_backend() {
     CT_DoLog EXTRA "Installing binutils"
     CT_DoExecLog ALL make install
 
+    if [ "${CT_BINUTILS_PLUGINS}" = "y" ]; then
+        # Create a directory for plugins such as LTO (to be installed by
+        # their providers later)
+        CT_DoExecLog ALL mkdir -p "${CT_PREFIX_DIR}/lib/bfd-plugins"
+    fi
+
     if [ "${build_manuals}" = "y" ]; then
         CT_DoLog EXTRA "Building and installing the binutils manuals"
         manuals_for=( gas binutils ld gprof )
@@ -221,15 +232,16 @@ do_binutils_backend() {
         rm -f "${prefix}/bin/${CT_TARGET}-ld"
         rm -f "${prefix}/${CT_TARGET}/bin/ld"
         sed -r -e "s/@@DEFAULT_LD@@/${CT_BINUTILS_LINKER_DEFAULT}/" \
-            "${CT_LIB_DIR}/scripts/build/binutils/binutils-ld.in"      \
+            "${CT_LIB_DIR}/packages/binutils/binutils-ld.in"      \
             >"${prefix}/bin/${CT_TARGET}-ld"
         chmod a+x "${prefix}/bin/${CT_TARGET}-ld"
         cp -a "${prefix}/bin/${CT_TARGET}-ld"   \
               "${prefix}/${CT_TARGET}/bin/ld"
 
-        # If needed, force using ld.bfd during the toolchain build
-        if [ "${CT_BINUTILS_FORCE_LD_BFD}" = "y" ]; then
-            export CTNG_LD_IS=bfd
+        # If needed, force using ld.bfd during the toolchain build.
+        # Note that
+        if [ "${CT_BINUTILS_FORCE_LD_BFD_DEFAULT}" = "y" ]; then
+            CT_EnvModify export CTNG_LD_IS bfd
         fi
     fi
 }

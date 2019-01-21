@@ -158,29 +158,31 @@ cc_gcc_multilib_housekeeping() {
 
     CT_IterateMultilibs evaluate_multilib_cflags evaluate_cflags
 
-    # Filtering out some of the options provided in CT-NG config. Then *prepend*
-    # them to CT_TARGET_CFLAGS, like scripts/crosstool-NG.sh does. Zero out
-    # the stashed MULTILIB flags so that we don't process them again in the passes
-    # that follow.
-    CT_DoLog DEBUG "Configured target CFLAGS: '${CT_ARCH_TARGET_CFLAGS_MULTILIB}'"
-    ml_unknown= # Pass through anything we don't know about
-    for f in ${CT_ARCH_TARGET_CFLAGS_MULTILIB}; do
-        eval ml=\$ml_`cc_gcc_classify_opt ${f}`
-        if [ "${ml}" != "seen" ]; then
-            new_cflags="${new_cflags} ${f}"
-        fi
-    done
-    CT_DoLog DEBUG "Filtered target CFLAGS: '${new_cflags}'"
-    CT_EnvModify CT_ALL_TARGET_CFLAGS "${new_cflags} ${CT_TARGET_CFLAGS}"
-    CT_EnvModify CT_ARCH_TARGET_CFLAGS_MULTILIB ""
+    if [ -n "${CT_MULTILIB}" ]; then
+        # Filtering out some of the options provided in CT-NG config. Then *prepend*
+        # them to CT_TARGET_CFLAGS, like scripts/crosstool-NG.sh does. Zero out
+        # the stashed MULTILIB flags so that we don't process them again in the passes
+        # that follow.
+        CT_DoLog DEBUG "Configured target CFLAGS: '${CT_ARCH_TARGET_CFLAGS_MULTILIB}'"
+        ml_unknown= # Pass through anything we don't know about
+        for f in ${CT_ARCH_TARGET_CFLAGS_MULTILIB}; do
+            eval ml=\$ml_`cc_gcc_classify_opt ${f}`
+            if [ "${ml}" != "seen" ]; then
+                new_cflags="${new_cflags} ${f}"
+            fi
+        done
+        CT_DoLog DEBUG "Filtered target CFLAGS: '${new_cflags}'"
+        CT_EnvModify CT_ALL_TARGET_CFLAGS "${new_cflags} ${CT_TARGET_CFLAGS}"
+        CT_EnvModify CT_ARCH_TARGET_CFLAGS_MULTILIB ""
 
-    # Currently, the only LDFLAGS are endianness-related
-    CT_DoLog DEBUG "Configured target LDFLAGS: '${CT_ARCH_TARGET_LDFLAGS_MULTILIB}'"
-    if [ "${ml_endian}" != "seen" ]; then
-        CT_EnvModify CT_ALL_TARGET_LDFLAGS "${CT_ARCH_TARGET_LDFLAGS_MULTILIB} ${CT_TARGET_LDFLAGS}"
-        CT_EnvModify CT_ARCH_TARGET_LDFLAGS_MULTILIB ""
+        # Currently, the only LDFLAGS are endianness-related
+        CT_DoLog DEBUG "Configured target LDFLAGS: '${CT_ARCH_TARGET_LDFLAGS_MULTILIB}'"
+        if [ "${ml_endian}" != "seen" ]; then
+            CT_EnvModify CT_ALL_TARGET_LDFLAGS "${CT_ARCH_TARGET_LDFLAGS_MULTILIB} ${CT_TARGET_LDFLAGS}"
+            CT_EnvModify CT_ARCH_TARGET_LDFLAGS_MULTILIB ""
+        fi
+        CT_DoLog DEBUG "Filtered target LDFLAGS: '${CT_ARCH_TARGET_LDFLAGS_MULTILIB}'"
     fi
-    CT_DoLog DEBUG "Filtered target LDFLAGS: '${CT_ARCH_TARGET_LDFLAGS_MULTILIB}'"
 }
 
 #------------------------------------------------------------------------------
@@ -350,12 +352,11 @@ do_gcc_core_backend() {
             ;;
     esac
 
-    # This is only needed when building libstdc++ in a canadian environment with
-    # this function being used for final step (i.e., when building for bare metal).
-    if [ "${build_step}" = "gcc_build" ]; then
-        CT_DoLog DEBUG "Copying headers to install area of core C compiler"
-        CT_DoExecLog ALL cp -a "${CT_HEADERS_DIR}" "${prefix}/${CT_TARGET}/include"
-    fi
+    case "${build_step}" in
+        core2|gcc_build)
+            CT_DoLog DEBUG "Copying headers to install area of core C compiler"
+            CT_DoExecLog ALL cp -a "${CT_HEADERS_DIR}" "${prefix}/${CT_TARGET}/include"
+    esac
 
     for tmp in ARCH ABI CPU TUNE FPU FLOAT ENDIAN; do
         eval tmp="\${CT_ARCH_WITH_${tmp}}"
@@ -712,6 +713,13 @@ do_gcc_core_backend() {
 
     cc_gcc_multilib_housekeeping cc="${prefix}/bin/${CT_TARGET}-${CT_CC}" \
         host="${host}"
+
+    # If binutils want the LTO plugin, point them to it
+    if [ -d "${CT_PREFIX_DIR}/lib/bfd-plugins" -a "${build_step}" = "gcc_host" ]; then
+        local gcc_version=$(cat "${CT_SRC_DIR}/gcc/gcc/BASE-VER" )
+        CT_DoExecLog ALL ln -sfv "../../libexec/gcc/${CT_TARGET}/${gcc_version}/liblto_plugin.so" \
+                "${CT_PREFIX_DIR}/lib/bfd-plugins/liblto_plugin.so"
+    fi
 }
 
 #------------------------------------------------------------------------------
@@ -757,14 +765,23 @@ do_cc_for_build() {
     CT_EndStep
 }
 
-gcc_movelibs() {
+gcc_movelibs()
+{
     local multi_flags multi_dir multi_os_dir multi_os_dir_gcc multi_root multi_index multi_count
-    local gcc_dir dst_dir
+    local gcc_dir dst_dir canon_root canon_prefix
     local rel
 
     for arg in "$@"; do
         eval "${arg// /\\ }"
     done
+
+    # GCC prints the sysroot in canonicalized form, which may be different if there
+    # is a symlink in the path. Since we need textual match to obtain a relative
+    # subdirectory path, canonicalize the prefix directory. Since GCC's behavior
+    # is not documented and hence may change at any time, canonicalize it too just
+    # for the good measure.
+    canon_root=$( cd "${multi_root}" && pwd -P )
+    canon_prefix=$( cd "${CT_PREFIX_DIR}" && pwd -P )
 
     # Move only files, directories are for other multilibs. We're looking inside
     # GCC's directory structure, thus use unmangled multi_os_dir that GCC reports.
@@ -776,9 +793,9 @@ gcc_movelibs() {
     # Depending on the selected libc, we may or may not have the ${multi_os_dir_gcc}
     # created by libc installation. If we do, use it. If we don't, use ${multi_os_dir}
     # to avoid creating an otherwise empty directory.
-    dst_dir="${multi_root}/lib/${multi_os_dir_gcc}"
+    dst_dir="${canon_root}/lib/${multi_os_dir_gcc}"
     if [ ! -d "${dst_dir}" ]; then
-        dst_dir="${multi_root}/lib/${multi_os_dir}"
+        dst_dir="${canon_root}/lib/${multi_os_dir}"
     fi
     CT_SanitizeVarDir dst_dir gcc_dir
     rel=$( echo "${gcc_dir#${CT_PREFIX_DIR}/}" | sed 's#[^/]\{1,\}#..#g' )
@@ -794,7 +811,7 @@ gcc_movelibs() {
         if [ -f "${gcc_dir}/${f}" ]; then
             CT_DoExecLog ALL mkdir -p "${dst_dir}"
             CT_DoExecLog ALL mv "${gcc_dir}/${f}" "${dst_dir}/${f}"
-            CT_DoExecLog ALL ln -sf "${rel}/${dst_dir#${CT_PREFIX_DIR}/}/${f}" "${gcc_dir}/${f}"
+            CT_DoExecLog ALL ln -sf "${rel}/${dst_dir#${canon_prefix}/}/${f}" "${gcc_dir}/${f}"
         fi
     done
 }
@@ -1185,4 +1202,11 @@ do_gcc_backend() {
 
     cc_gcc_multilib_housekeeping cc="${prefix}/bin/${CT_TARGET}-${CT_CC}" \
         host="${host}"
+
+    # If binutils want the LTO plugin, point them to it
+    if [ -d "${CT_PREFIX_DIR}/lib/bfd-plugins" -a "${build_step}" = "gcc_host" ]; then
+        local gcc_version=$(cat "${CT_SRC_DIR}/gcc/gcc/BASE-VER" )
+        CT_DoExecLog ALL ln -sfv "../../libexec/gcc/${CT_TARGET}/${gcc_version}/liblto_plugin.so" \
+                "${CT_PREFIX_DIR}/lib/bfd-plugins/liblto_plugin.so"
+    fi
 }
