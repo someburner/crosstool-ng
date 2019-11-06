@@ -15,8 +15,7 @@ config/configure.in
 config/gen/
 config/versions/
 .config
-.config.org
-.config.orig
+.config.*
 verbatim-data.mk
 maintainer/package-versions
 libexec/
