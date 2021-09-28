@@ -18,6 +18,7 @@ AC_CONFIG_MACRO_DIR([m4])
 # - Object files are generated in a subdirectory (new default in automake)
 # - Request new tar format (old, tar-v7, breaks on long paths we have)
 AM_INIT_AUTOMAKE([-Wall -Werror foreign no-dist-gzip dist-xz dist-bzip2 subdir-objects tar-pax])
+AM_SILENT_RULES([yes])
 
 # To avoid stubbing autotools with missing script
 AM_MAINTAINER_MODE([enable])
@@ -151,6 +152,14 @@ AC_SUBST([wget])
 AC_CHECK_PROGS([curl], [curl])
 CTNG_SET_KCONFIG_OPTION([curl])
 AC_SUBST([curl])
+
+AC_CHECK_PROGS([meson], [meson])
+CTNG_SET_KCONFIG_OPTION([meson])
+AC_SUBST([meson])
+
+AC_CHECK_PROGS([ninja], [ninja])
+CTNG_SET_KCONFIG_OPTION([ninja])
+AC_SUBST([ninja])
 
 CTNG_CPU_COUNT
 
@@ -287,7 +296,7 @@ AC_FUNC_REALLOC
 AC_FUNC_ALLOCA
 
 AM_GNU_GETTEXT([external])
-AM_GNU_GETTEXT_VERSION([0.19.8])
+AM_GNU_GETTEXT_VERSION([0.19.7])
 
 # For now, curses are needed to build kconfig. We may support a command-line
 # only configuration without curses later. For now, fail in configure but

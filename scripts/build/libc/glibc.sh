@@ -199,7 +199,11 @@ glibc_backend_once()
     printf "%s\n" "${CT_GLIBC_CONFIGPARMS}" > configparms
 
     # glibc can't be built without -O2 (reference needed!)
-    glibc_cflags+=" -O2"
+    glibc_cflags+=" -g -O2"
+
+    if [ "${CT_GLIBC_ENABLE_COMMON_FLAG}" = "y" ]; then
+        glibc_cflags+=" -fcommon"
+    fi
 
     case "${CT_GLIBC_ENABLE_FORTIFIED_BUILD}" in
         y)  ;;
@@ -260,9 +264,12 @@ glibc_backend_once()
 
     # CFLAGS are only applied when compiling .c files. .S files are compiled with ASFLAGS,
     # but they are not passed by configure. Thus, pass everything in CC instead.
+    # The CFLAGS variable needs to be cleared, else the default "-g -O2"
+    # would override previous flags.
     CT_DoExecLog CFG                                                \
     BUILD_CC=${CT_BUILD}-gcc                                        \
     CC="${CT_TARGET}-${CT_CC} ${glibc_cflags}"                      \
+    CFLAGS=""                                                       \
     AR=${CT_TARGET}-ar                                              \
     RANLIB=${CT_TARGET}-ranlib                                      \
     "${CONFIG_SHELL}"                                               \
@@ -311,6 +318,8 @@ glibc_backend_once()
             ;;
     esac
 
+    # Make sure glibc build system respects our provided CFLAGS.
+    extra_make_args+=( default_cflags= )
     extra_make_args+=( "BUILD_CFLAGS=${build_cflags}" )
     extra_make_args+=( "BUILD_CPPFLAGS=${build_cppflags}" )
     extra_make_args+=( "BUILD_LDFLAGS=${build_ldflags}" )
