@@ -109,12 +109,6 @@ do_gmp_backend() {
 
     CT_DoLog EXTRA "Configuring GMP"
 
-    # FIXME is it needed even for older versions? They seem to compile fine
-    # without it.
-    if [ "${CT_GMP_HAS_MPBSD}" = "y" ]; then
-        extra_config+=("--enable-mpbsd")
-    fi
-
     # To avoind “illegal text-relocation” linking error against
     # the static library, see:
     #     https://github.com/Homebrew/homebrew-core/pull/25470
@@ -124,9 +118,12 @@ do_gmp_backend() {
             ;;
     esac
 
-    # FIXME: GMP's configure script doesn't respect the host parameter
-    # when not cross-compiling, ie when build == host.
+    # GMP's configure script doesn't respect the host parameter
+    # when not cross-compiling, ie when build == host so set
+    # CC_FOR_BUILD and CPP_FOR_BUILD.
     CT_DoExecLog CFG                                \
+    CC_FOR_BUILD="${CT_BUILD}-gcc"                  \
+    CPP_FOR_BUILD="{CT_BUILD}-cpp"                  \
     CC="${host}-gcc"                                \
     CFLAGS="${cflags} -fexceptions"                 \
     LDFLAGS="${ldflags}"                            \

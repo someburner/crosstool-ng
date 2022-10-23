@@ -171,6 +171,9 @@ do_binutils_backend() {
     extra_config+=("--disable-sim")
     extra_config+=("--disable-gdb")
 
+    # libdebuginfod in incompatible with static linking
+    [ "${CT_STATIC_TOOLCHAIN}" = "y" ] && extra_config+=("--without-debuginfod")
+
     [ "${CT_TOOLCHAIN_ENABLE_NLS}" != "y" ] && extra_config+=("--disable-nls")
 
     # Disable usage of glob for higher compatibility.
@@ -307,8 +310,9 @@ do_binutils_for_target() {
     local -a install_targets
     local t
 
-    [ "${CT_BINUTILS_FOR_TARGET_IBERTY}" = "y" ] && targets+=("libiberty")
-    [ "${CT_BINUTILS_FOR_TARGET_BFD}"    = "y" ] && targets+=("bfd")
+    [ "${CT_BINUTILS_FOR_TARGET_IBERTY}"  = "y" ] && targets+=("libiberty")
+    [ "${CT_BINUTILS_FOR_TARGET_BFD}"     = "y" ] && targets+=("bfd")
+    [ "${CT_BINUTILS_FOR_TARGET_OPCODES}" = "y" ] && targets+=("opcodes")
     for t in "${targets[@]}"; do
         build_targets+=("all-${t}")
         install_targets+=("install-${t}")

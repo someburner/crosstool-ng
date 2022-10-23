@@ -21,6 +21,9 @@ config CONFIGURE_has_meson
 config CONFIGURE_has_ninja
     @KCONFIG_ninja@
 
+config CONFIGURE_has_rsync
+    @KCONFIG_rsync@
+
 config CONFIGURE_has_make_3_81_or_newer
     @KCONFIG_make_3_81_or_newer@
 
@@ -50,6 +53,9 @@ config CONFIGURE_has_python_3_4_or_newer
 
 config CONFIGURE_has_bison_2_7_or_newer
     @KCONFIG_bison_2_7_or_newer@
+
+config CONFIGURE_has_bison_3_0_4_or_newer
+    @KCONFIG_bison_3_0_4_or_newer@
 
 config CONFIGURE_has_python
     @KCONFIG_python@
