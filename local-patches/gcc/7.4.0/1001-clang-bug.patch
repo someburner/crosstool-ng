@@ -1,0 +1,29 @@
+--- a/gcc/genconditions.c	2017-01-01 04:07:43.000000000 -0800
++++ b/gcc/genconditions.c	2022-10-23 02:08:02.000000000 -0700
+@@ -57,7 +57,7 @@
+ /* It is necessary, but not entirely safe, to include the headers below\n\
+    in a generator program.  As a defensive measure, don't do so when the\n\
+    table isn't going to have anything in it.  */\n\
+-#if GCC_VERSION >= 3001\n\
++#if GCC_VERSION >= 3001 && __clang_major__ < 9\n\
+ \n\
+ /* Do not allow checking to confuse the issue.  */\n\
+ #undef CHECKING_P\n\
+@@ -168,7 +168,7 @@
+    vary at run time.  It works in 3.0.1 and later; 3.0 only when not\n\
+    optimizing.  */\n\
+ \n\
+-#if GCC_VERSION >= 3001\n\
++#if GCC_VERSION >= 3001 && __clang_major__ < 9\n\
+ static const struct c_test insn_conditions[] = {\n");
+ 
+   traverse_c_tests (write_one_condition, 0);
+@@ -189,7 +189,7 @@
+ 	"  unsigned int i;\n"
+         "  const char *p;\n"
+         "  puts (\"(define_conditions [\");\n"
+-	"#if GCC_VERSION >= 3001\n"
++	"#if GCC_VERSION >= 3001 && __clang_major__ < 9\n"
+ 	"  for (i = 0; i < ARRAY_SIZE (insn_conditions); i++)\n"
+ 	"    {\n"
+ 	"      printf (\"  (%d \\\"\", insn_conditions[i].value);\n"
